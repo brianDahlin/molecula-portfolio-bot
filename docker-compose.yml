@@ -1,0 +1,39 @@
+services:
+  app:
+    build: .
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    networks: [botnet]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bot
+      POSTGRES_PASSWORD: botpass
+      POSTGRES_DB: molecula_portfolio
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - '5432:5432'
+    restart: unless-stopped
+    networks: [botnet]
+
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redisdata:/data
+    ports:
+      - '6379:6379'
+    restart: unless-stopped
+    networks: [botnet]
+
+networks:
+  botnet:
+
+volumes:
+  pgdata:
+  redisdata:
