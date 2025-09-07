@@ -1,4 +1,3 @@
-// src/portfolio/portfolio.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UsersService } from '../users/users.service';
@@ -149,7 +148,7 @@ export class PortfolioService {
     const yieldValue = Number((balance - deposited).toFixed(10));
 
     // 4) APY (XIRR) — используем кэшфлоу (депозиты отрицательные, выводы положительные) + финальный положительный cashflow = текущий баланс
-    const apy = await this.computeApyFromFlows(flowsBU, totalMusdBU, musdDec);
+    const apy = this.computeApyFromFlows(flowsBU, totalMusdBU, musdDec);
 
     return { deposit: deposited, balance, yieldValue, apy };
   }

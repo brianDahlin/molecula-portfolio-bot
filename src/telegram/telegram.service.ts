@@ -89,17 +89,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       return ctx.reply(`Removed: ${addr}`);
     });
 
-    this.bot.command('list', async (ctx) => {
-      const chatId = ctx.chat.id;
-      const addrs = await this.users.listAddresses(chatId);
-      if (!addrs.length)
-        return ctx.reply('No addresses yet. Add with `/add 0x...`', {
-          parse_mode: 'Markdown',
-        });
-      const lines = addrs.map((a) => `• ${a}`);
-      return ctx.reply(lines.join('\n'));
-    });
-
     this.bot.command('stats', async (ctx) => {
       const chatId = ctx.chat.id;
       const addrs = await this.users.listAddresses(chatId);
@@ -110,17 +99,24 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
       try {
         const s = await this.portfolio.getStats(chatId);
+
+        const fmt = (n: number) =>
+          n.toLocaleString(undefined, {
+            minimumFractionDigits: 4,
+            maximumFractionDigits: 4,
+          });
+
         const apyPct = ((s.apy ?? 0) * 100).toFixed(2);
 
         const msg = `📊 *Molecula Portfolio*
 ——————————————
-💰 *Total deposited (USDT)*: ${s.deposit.toFixed(4)}
-🏦 *Current balance (mUSD)*: ${s.balance.toFixed(4)}
+💰 *Total deposited (USDT)*: ${fmt(s.deposit)}
+🏦 *Current balance (mUSD)*: ${fmt(s.balance)}
 ——————————————
-📈 *Total yield (USDT)*: ${s.yieldValue.toFixed(4)}
+📈 *Total yield (USDT)*: ${fmt(s.yieldValue)}
 💵 *APY (since inception)*: ${apyPct}%`;
 
-        await ctx.replyWithMarkdown(msg);
+        await ctx.reply(msg, { parse_mode: 'Markdown' });
       } catch (e) {
         this.logger.error('Failed to compute stats', e as Error);
         await ctx.reply('Failed to compute stats, please try again later.');
