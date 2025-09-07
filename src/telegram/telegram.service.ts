@@ -102,8 +102,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
         const fmt = (n: number) =>
           n.toLocaleString(undefined, {
-            minimumFractionDigits: 4,
-            maximumFractionDigits: 4,
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
           });
 
         const apyPct = ((s.apy ?? 0) * 100).toFixed(2);
