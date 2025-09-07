@@ -7,15 +7,24 @@ The bot aggregates deposits, balances, and yields across all addresses provided 
 
 ## Features
 
-- Add or remove multiple EVM addresses to track
-- View the list of tracked addresses
-- Fetch **total portfolio stats**:
-  - 💰 **Total Deposited (USDT)**
-  - 🏦 **Current Balance (mUSD)**
-  - 📈 **Yield** = balance – deposit
-- Works with Molecula’s smart contracts (USDT + mUSD)
-- Dockerized for easy deployment
-- Persistent storage with PostgreSQL (users & addresses)
+- Add, list, and remove EVM addresses tied to your Telegram account.
+- Track portfolio across multiple addresses:
+  - **Total deposited (USDT)** — total net deposits into Molecula (deposits - withdrawals).
+  - **Current balance (mUSD)** — real-time balance of all tracked addresses.
+  - **Total yield (USDT)** — profit or loss since inception.
+  - **APY (since inception)** — annualized yield taking into account deposits/withdrawals timing.
+- User-friendly formatting with thousands separators and 4 decimal places.
+- Works via simple Telegram commands.
+- Dockerized for easy deployment.
+
+---
+
+## Usage
+
+You can either:
+
+1. Use our public bot: [@Molecula_Portfolio_bot](https://t.me/Molecula_Portfolio_bot)
+2. Or deploy your own instance (recommended if you manage more than 2 accounts in the Molecula ecosystem).
 
 ---
 
@@ -136,15 +145,12 @@ npm run dev
 
 ---
 
-## Usage
+## Commands
 
-In Telegram:
-
-- `/start` – show help
-- `/add 0xYourAddress` – add an EVM address to track
-- `/remove 0xYourAddress` – remove address
-- `/list` – list tracked addresses
-- `/stats` – show total deposit, balance, and yield
+- `/add <address>` — add an EVM address.
+- `/remove <address>` — remove an address.
+- `/list` — show all tracked addresses.
+- `/stats` — show consolidated portfolio statistics.
 
 ---
 
