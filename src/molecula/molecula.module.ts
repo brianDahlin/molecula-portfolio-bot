@@ -1,4 +1,3 @@
-// src/molecula/molecula.module.ts
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MoleculaService } from './molecula.service';

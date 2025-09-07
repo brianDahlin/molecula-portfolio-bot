@@ -7,7 +7,6 @@ async function bootstrap() {
     logger: ['log', 'error', 'warn', 'debug'],
   });
   await app.init();
-  // Telegraf polling is started inside TelegramService
   console.log('Molecula Portfolio Bot started');
 }
 bootstrap().catch((err) => {

@@ -1,4 +1,3 @@
-// src/telegram/telegram.service.ts
 import {
   Injectable,
   Logger,
@@ -110,11 +109,11 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
         const msg = `📊 *Molecula Portfolio*
 ——————————————
-💰 *Total deposited (USDT)*: ${fmt(s.deposit)}
-🏦 *Current balance (mUSD)*: ${fmt(s.balance)}
+💰 Total deposited: *$${fmt(s.deposit)}*
+🏦 Current balance: *$${fmt(s.balance)}*
 ——————————————
-📈 *Total yield (USDT)*: ${fmt(s.yieldValue)}
-💵 *APY (since inception)*: ${apyPct}%`;
+📈 Total yield: *$${fmt(s.yieldValue)}*
+💵 APY (since inception): *${apyPct}%*`;
 
         await ctx.reply(msg, { parse_mode: 'Markdown' });
       } catch (e) {
