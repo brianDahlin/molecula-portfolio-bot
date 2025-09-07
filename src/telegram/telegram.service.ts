@@ -1,3 +1,4 @@
+// src/telegram/telegram.service.ts
 import {
   Injectable,
   Logger,
@@ -49,6 +50,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           '• /add `<address>` — add EVM address',
           '• /remove `<address>` — remove address',
           '• /list — show addresses',
+          '• /stats — totals & APY',
         ].join('\n'),
         { parse_mode: 'Markdown' },
       );
@@ -107,23 +109,18 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         });
 
       try {
-        const { deposit, balance, yieldValue } =
-          await this.portfolio.getStats(chatId);
-        const fmt = (n: number) =>
-          n.toLocaleString(undefined, {
-            minimumFractionDigits: 4,
-            maximumFractionDigits: 4,
-          });
+        const s = await this.portfolio.getStats(chatId);
+        const apyPct = ((s.apy ?? 0) * 100).toFixed(2);
 
-        await ctx.reply(
-          [
-            '📊 *Molecula Portfolio*',
-            `Total deposited (USDT):  ${fmt(deposit)}`,
-            `Total balance (mUSD):   ${fmt(balance)}`,
-            `Total yield:            ${fmt(yieldValue)}`,
-          ].join('\n'),
-          { parse_mode: 'Markdown' },
-        );
+        const msg = `📊 *Molecula Portfolio*
+——————————————
+💰 *Total deposited (USDT)*: ${s.deposit.toFixed(4)}
+🏦 *Current balance (mUSD)*: ${s.balance.toFixed(4)}
+——————————————
+📈 *Total yield (USDT)*: ${s.yieldValue.toFixed(4)}
+💵 *APY (since inception)*: ${apyPct}%`;
+
+        await ctx.replyWithMarkdown(msg);
       } catch (e) {
         this.logger.error('Failed to compute stats', e as Error);
         await ctx.reply('Failed to compute stats, please try again later.');
