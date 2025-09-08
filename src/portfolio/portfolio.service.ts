@@ -8,12 +8,13 @@ interface Erc20Typed {
   balanceOf(owner: string): Promise<bigint>;
   decimals(): Promise<number>;
 }
+
 const ERC20_ABI = [
   'function balanceOf(address owner) view returns (uint256)',
   'function decimals() view returns (uint8)',
 ] as const;
 
-// ----- XIRR utilities -----
+/* ===================== XIRR utilities ===================== */
 function yearFraction(a: Date, b: Date) {
   return (b.getTime() - a.getTime()) / (1000 * 60 * 60 * 24 * 365.2425);
 }
@@ -31,27 +32,26 @@ function xnpv(rate: number, flows: { date: Date; amount: number }[]) {
 
 function xirr(
   flows: { date: Date; amount: number }[],
-  guess = 0.1,
+  guess = 0.2,
 ): number | null {
-  // Newton-Raphson
+  // Newton–Raphson
   let rate = guess;
   const maxIter = 100;
   const tol = 1e-7;
 
   for (let i = 0; i < maxIter; i++) {
     const f = xnpv(rate, flows);
-    // производная NPV по ставке (численная)
     const h = 1e-6;
     const f1 = xnpv(rate + h, flows);
     const d = (f1 - f) / h;
-    if (Math.abs(d) < 1e-12) break; // защита
-    const newRate = rate - f / d;
-    if (Math.abs(newRate - rate) < tol) return newRate;
-    rate = newRate;
+    if (!isFinite(d) || Math.abs(d) < 1e-12) break;
+    const next = rate - f / d;
+    if (Math.abs(next - rate) < tol) return next;
+    rate = next;
   }
   return null;
 }
-// ----- end XIRR utilities -----
+/* ========================================================== */
 
 @Injectable()
 export class PortfolioService {
@@ -73,7 +73,7 @@ export class PortfolioService {
     this.provider = new JsonRpcProvider(rpcUrl);
 
     this.musdToken = this.config.getOrThrow<string>('MUSD_TOKEN');
-    this.musdDecimalsEnv = this.config.get<number>('MUSD_DECIMALS');
+    this.musdDecimalsEnv = this.config.get<number>('MUSD_DECIMALS'); // обычно 18
   }
 
   private getErc20(token: string): Erc20Typed {
@@ -115,7 +115,44 @@ export class PortfolioService {
   }
 
   /**
-   * Текущие агрегаты (как раньше).
+   * Рассчитать APY через XIRR:
+   * - кэшфлоу: депозиты отрицательные, выводы положительные
+   * - финальный положительный кэшфлоу = текущий баланс "на сегодня"
+   * Возвращает годовую ставку (0.12 = 12%).
+   */
+  private async computeApyFromFlows(
+    flowsBU: { date: Date; amountBU: bigint }[],
+    currentBalanceBU: bigint,
+    musdDecimals: number,
+  ): Promise<number> {
+    if (flowsBU.length === 0) return 0;
+
+    const flows = flowsBU.map((f) => ({
+      date: f.date,
+      amount: this.toNumber(f.amountBU, musdDecimals), // депозиты < 0, выводы > 0
+    }));
+
+    // Финальная стоимость портфеля (позитивный cf)
+    flows.push({
+      date: new Date(),
+      amount: this.toNumber(currentBalanceBU, musdDecimals),
+    });
+
+    const hasOut = flows.some((f) => f.amount < 0);
+    const hasIn = flows.some((f) => f.amount > 0);
+    if (!hasOut || !hasIn) return 0;
+
+    const irr = xirr(flows, 0.2);
+    if (irr === null || !isFinite(irr)) return 0;
+    return irr;
+  }
+
+  /**
+   * Основные метрики:
+   * - deposit  = netDeposits (deposits - withdrawals), положительный при чистых депозитах
+   * - balance  = on-chain mUSD сумма по адресам
+   * - yield    = balance - deposit
+   * - apy      = XIRR на основе кэшфлоу + текущего баланса
    */
   async getStats(tgChatId: number | string) {
     const addresses = await this.users.listAddresses(tgChatId);
@@ -128,63 +165,26 @@ export class PortfolioService {
       this.musdDecimalsEnv,
     );
 
-    // 1) Собираем кэшфлоу ДЛЯ APY и отдельно считаем корректный нетто-депозит для UI
+    // Кэшфлоу для APY + netDeposits для UI
     const [flowsBU, netDepositedBU] = await Promise.all([
-      this.molecula.cashflowsForAddresses(addresses), // для XIRR
-      this.molecula.sumNetDepositsForAddresses(addresses), // deposits - withdrawals (base units, всегда «положительный» при чистых депозитах)
+      this.molecula.cashflowsForAddresses(addresses),
+      this.molecula.sumNetDepositsForAddresses(addresses),
     ]);
 
-    // «Total deposited» для UI: это именно deposits - withdrawals (в обычном знаке)
     const deposited = this.toNumber(netDepositedBU, musdDec);
 
-    // 2) Текущий on-chain баланс mUSD
+    // Текущий on-chain баланс
     let totalMusdBU = 0n;
     for (const addr of addresses) {
       totalMusdBU += await this.balanceOfBU(this.musdToken, addr);
     }
     const balance = this.toNumber(totalMusdBU, musdDec);
 
-    // 3) Доходность
     const yieldValue = Number((balance - deposited).toFixed(10));
 
-    // 4) APY (XIRR) — используем кэшфлоу (депозиты отрицательные, выводы положительные) + финальный положительный cashflow = текущий баланс
-    const apy = this.computeApyFromFlows(flowsBU, totalMusdBU, musdDec);
+    // APY по XIRR
+    const apy = await this.computeApyFromFlows(flowsBU, totalMusdBU, musdDec);
 
     return { deposit: deposited, balance, yieldValue, apy };
-  }
-
-  /**
-   * Рассчитать APY через XIRR для набора кэшфлоу + финальной стоимости (текущий баланс).
-   * Возвращает десятичную ставку (0.12 = 12%).
-   */
-  private computeApyFromFlows(
-    flowsBU: { date: Date; amountBU: bigint }[],
-    currentBalanceBU: bigint,
-    musdDecimals: number,
-  ): number {
-    if (flowsBU.length === 0) return 0;
-
-    const flows = flowsBU.map((f) => ({
-      date: f.date,
-      amount: this.toNumber(f.amountBU, musdDecimals), // отрицательные депозиты / положительные выводы
-    }));
-
-    // финальный позитивный кэшфлоу = текущая стоимость портфеля "сегодня"
-    flows.push({
-      date: new Date(),
-      amount: this.toNumber(currentBalanceBU, musdDecimals),
-    });
-
-    // Проверка: нужны и оттоки, и притоки
-    const hasOut = flows.some((f) => f.amount < 0);
-    const hasIn = flows.some((f) => f.amount > 0);
-    if (!hasOut || !hasIn) return 0;
-
-    // начальная угадайка: 20% годовых
-    const irr = xirr(flows, 0.2);
-    if (irr === null || !isFinite(irr)) return 0;
-
-    // irr уже годовая ставка, т.к. в формуле xnpv учитывается годовая доля времени
-    return irr;
   }
 }

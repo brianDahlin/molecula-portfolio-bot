@@ -13,11 +13,11 @@ export interface TokenOperation {
   _id: string;
   transaction: string;
   tokenAddress: string;
-  created: number; // ms epoch
+  created: number; // epoch (ms or sec) — нормализуем ниже
   sender: string;
   from: string;
   to: string;
-  value: string; // base units (stringified uint)
+  value: string; // uint256 as string (base units, 18d)
   shares?: string;
   type: TokenOperationType;
 }
@@ -35,7 +35,7 @@ export interface TokenOperationsFilter {
   to?: string;
   type?: TokenOperationType[];
   limit?: number;
-  before?: string; // pagination cursor (id of the last item from previous page)
+  before?: string; // pagination cursor: set to last _id from previous page
   order?: 'asc' | 'desc';
   withoutEnrich?: boolean;
 }
@@ -88,6 +88,12 @@ export class MoleculaService {
       }
     }
   `;
+
+  // Нормализация created в миллисекунды (API иногда отдаёт секунды)
+  private toDate(created: number): Date {
+    const ms = created > 1e12 ? created : created * 1000;
+    return new Date(ms);
+  }
 
   // ---------- High-level paginated iterator ----------
   /**
@@ -146,7 +152,7 @@ export class MoleculaService {
         if (op.to?.toLowerCase() === addr) {
           try {
             const v = BigInt(op.value);
-            flows.push({ date: new Date(op.created), amountBU: -v });
+            flows.push({ date: this.toDate(op.created), amountBU: -v });
           } catch {
             this.logger.warn(`Bad deposit value ${op._id}: ${op.value}`);
           }
@@ -165,7 +171,7 @@ export class MoleculaService {
         if (op.from?.toLowerCase() === addr) {
           try {
             const v = BigInt(op.value);
-            flows.push({ date: new Date(op.created), amountBU: v });
+            flows.push({ date: this.toDate(op.created), amountBU: v });
           } catch {
             this.logger.warn(`Bad withdrawal value ${op._id}: ${op.value}`);
           }
