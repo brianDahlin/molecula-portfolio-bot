@@ -13,7 +13,7 @@ export interface TokenOperation {
   _id: string;
   transaction: string;
   tokenAddress: string;
-  created: number; // epoch (ms or sec) — нормализуем ниже
+  created: number; // epoch (ms or sec)
   sender: string;
   from: string;
   to: string;
@@ -24,7 +24,7 @@ export interface TokenOperation {
 
 export interface CashflowBU {
   date: Date; // when event happened
-  amountBU: bigint; // mUSD base units (18d). Deposits = negative, Withdrawals = positive
+  amountBU: bigint; // base units (18d). Deposits = negative, Withdrawals = positive
 }
 
 export interface TokenOperationsFilter {
@@ -53,25 +53,34 @@ export class MoleculaService {
 
   // ---------- Low-level GraphQL helper ----------
   private async post<T, V = unknown>(query: string, variables: V): Promise<T> {
-    const res = await fetch(this.gqlUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query, variables }),
-    });
+    // Небольшая защита от зависания HTTP: таймаут 20с
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 20_000);
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`GraphQL HTTP ${res.status}: ${text}`);
-    }
+    try {
+      const res = await fetch(this.gqlUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query, variables }),
+        signal: ac.signal,
+      });
 
-    const json = (await res.json()) as GqlResponse<T>;
-    if (json.errors?.length) {
-      throw new Error(json.errors.map((e) => e.message).join('; '));
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`GraphQL HTTP ${res.status}: ${text}`);
+      }
+
+      const json = (await res.json()) as GqlResponse<T>;
+      if (json.errors?.length) {
+        throw new Error(json.errors.map((e) => e.message).join('; '));
+      }
+      if (!json.data) {
+        throw new Error('Empty GraphQL response');
+      }
+      return json.data;
+    } finally {
+      clearTimeout(t);
     }
-    if (!json.data) {
-      throw new Error('Empty GraphQL response');
-    }
-    return json.data;
   }
 
   private static readonly TOKEN_OPS_Q = `
@@ -95,6 +104,16 @@ export class MoleculaService {
     return new Date(ms);
   }
 
+  private parseBU(v: string, ctx: string): bigint {
+    try {
+      // Значения приходят как десятичная строка base-10 целого (uint256)
+      return BigInt(v);
+    } catch {
+      this.logger.warn(`Bad uint value (${ctx}): ${v}`);
+      return 0n;
+    }
+  }
+
   // ---------- High-level paginated iterator ----------
   /**
    * Async generator over tokenOperations with simple cursor pagination by `_id`.
@@ -104,7 +123,8 @@ export class MoleculaService {
     baseFilter: Omit<TokenOperationsFilter, 'before' | 'order' | 'limit'>,
     pageSize = 1000,
   ): AsyncGenerator<TokenOperation, void, unknown> {
-    let before: string | undefined = undefined;
+    let before: string | undefined;
+    let safety = 0;
 
     while (true) {
       const filter: TokenOperationsFilter = {
@@ -124,16 +144,22 @@ export class MoleculaService {
 
       for (const op of ops) yield op;
 
-      // set cursor to the last item of this page
-      before = ops[ops.length - 1]._id;
+      const last = ops[ops.length - 1]?._id;
+      if (!last || last === before) break; // защита от зацикливания
+      before = last;
+
+      if (++safety > 100_000) {
+        this.logger.warn('iterateOperations: safety break (too many pages)');
+        break;
+      }
     }
   }
 
   // ---------- Cashflows (for APY/XIRR) ----------
   /**
-   * Build mUSD cashflows for a single address (base units, 18 decimals):
-   * - deposits/swapDeposit (mint to address): negative flow
-   * - withdrawals/swapWithdrawal (burn from address): positive flow
+   * Build cashflows for a single address (base units, 18 decimals):
+   * - deposits/swapDeposit (to = address): negative flow
+   * - withdrawals/swapWithdrawal (from = address): positive flow
    */
   async cashflowsForAddress(address: string): Promise<CashflowBU[]> {
     if (!address) return [];
@@ -144,18 +170,13 @@ export class MoleculaService {
     // Deposits (mint to address) => negative flow
     {
       const filter: Omit<TokenOperationsFilter, 'before' | 'order' | 'limit'> =
-        {
-          to: addr,
-          type: ['deposit', 'swapDeposit'],
-        };
+        { to: addr, type: ['deposit', 'swapDeposit'] };
+
       for await (const op of this.iterateOperations(filter, 1000)) {
         if (op.to?.toLowerCase() === addr) {
-          try {
-            const v = BigInt(op.value);
+          const v = this.parseBU(op.value, `deposit ${op._id}`);
+          if (v !== 0n)
             flows.push({ date: this.toDate(op.created), amountBU: -v });
-          } catch {
-            this.logger.warn(`Bad deposit value ${op._id}: ${op.value}`);
-          }
         }
       }
     }
@@ -163,18 +184,13 @@ export class MoleculaService {
     // Withdrawals (burn from address) => positive flow
     {
       const filter: Omit<TokenOperationsFilter, 'before' | 'order' | 'limit'> =
-        {
-          from: addr,
-          type: ['withdrawal', 'swapWithdrawal'],
-        };
+        { from: addr, type: ['withdrawal', 'swapWithdrawal'] };
+
       for await (const op of this.iterateOperations(filter, 1000)) {
         if (op.from?.toLowerCase() === addr) {
-          try {
-            const v = BigInt(op.value);
+          const v = this.parseBU(op.value, `withdrawal ${op._id}`);
+          if (v !== 0n)
             flows.push({ date: this.toDate(op.created), amountBU: v });
-          } catch {
-            this.logger.warn(`Bad withdrawal value ${op._id}: ${op.value}`);
-          }
         }
       }
     }
@@ -196,12 +212,11 @@ export class MoleculaService {
     return all;
   }
 
-  // ---------- Aggregates (deposits/withdrawals/net) ----------
+  // ---------- Aggregates ----------
   /**
-   * Sum of all minted mUSD to the address (deposit/swapDeposit, to=address).
-   * Returns base units (bigint, 18 decimals).
+   * GROSS deposits: сумма всех депозитов в адрес (deposit|swapDeposit, to=address).
    */
-  async sumDepositsForAddress(address: string): Promise<bigint> {
+  async sumGrossDepositsForAddress(address: string): Promise<bigint> {
     if (!address) return 0n;
 
     const addr = address.toLowerCase();
@@ -214,21 +229,16 @@ export class MoleculaService {
 
     for await (const op of this.iterateOperations(filter, 1000)) {
       if (op.to?.toLowerCase() === addr) {
-        try {
-          sum += BigInt(op.value);
-        } catch {
-          this.logger.warn(`Bad value in deposit op ${op._id}: ${op.value}`);
-        }
+        sum += this.parseBU(op.value, `deposit ${op._id}`);
       }
     }
     return sum;
   }
 
   /**
-   * Sum of all burnt mUSD from the address (withdrawal/swapWithdrawal, from=address).
-   * Returns base units (bigint, 18 decimals).
+   * GROSS withdrawals: сумма всех выводов из адреса (withdrawal|swapWithdrawal, from=address).
    */
-  async sumWithdrawalsForAddress(address: string): Promise<bigint> {
+  async sumGrossWithdrawalsForAddress(address: string): Promise<bigint> {
     if (!address) return 0n;
 
     const addr = address.toLowerCase();
@@ -241,35 +251,69 @@ export class MoleculaService {
 
     for await (const op of this.iterateOperations(filter, 1000)) {
       if (op.from?.toLowerCase() === addr) {
-        try {
-          sum += BigInt(op.value);
-        } catch {
-          this.logger.warn(`Bad value in withdrawal op ${op._id}: ${op.value}`);
-        }
+        sum += this.parseBU(op.value, `withdrawal ${op._id}`);
       }
     }
     return sum;
   }
 
   /**
-   * Net deposits for a single address: deposits - withdrawals (base units).
+   * GROSS helpers for multiple addresses.
    */
-  async sumNetDepositsForAddress(address: string): Promise<bigint> {
-    const [deposits, withdrawals] = await Promise.all([
-      this.sumDepositsForAddress(address),
-      this.sumWithdrawalsForAddress(address),
-    ]);
-    return deposits - withdrawals;
+  async sumGrossDepositsForAddresses(addresses: string[]): Promise<bigint> {
+    let total = 0n;
+    for (const a of addresses)
+      total += await this.sumGrossDepositsForAddress(a);
+    return total;
+  }
+
+  async sumGrossWithdrawalsForAddresses(addresses: string[]): Promise<bigint> {
+    let total = 0n;
+    for (const a of addresses)
+      total += await this.sumGrossWithdrawalsForAddress(a);
+    return total;
   }
 
   /**
-   * Net deposits for multiple addresses (sum of nets).
+   * NET deposits for a single address: deposits − withdrawals (base units).
+   * (Оставляем для задач, где нужен именно net, но НЕ используем как “Total deposited” в UI)
+   */
+  async sumNetDepositsForAddress(address: string): Promise<bigint> {
+    const [d, w] = await Promise.all([
+      this.sumGrossDepositsForAddress(address),
+      this.sumGrossWithdrawalsForAddress(address),
+    ]);
+    return d - w;
+  }
+
+  /**
+   * NET for multiple addresses (sum of nets).
    */
   async sumNetDepositsForAddresses(addresses: string[]): Promise<bigint> {
     let total = 0n;
-    for (const a of addresses) {
-      total += await this.sumNetDepositsForAddress(a);
-    }
+    for (const a of addresses) total += await this.sumNetDepositsForAddress(a);
     return total;
+  }
+
+  // ---------- P&L helper ----------
+  /**
+   * P&L since inception в базовых единицах:
+   *   yieldBU = balanceBU + grossWithdrawalsBU − grossDepositsBU
+   * Тут balanceBU — текущий баланс портфеля (18d), который ты получаешь из своего источника.
+   */
+  async computePnlSinceInceptionBU(
+    addresses: string[],
+    balanceBU: bigint,
+  ): Promise<{
+    grossDepositsBU: bigint;
+    grossWithdrawalsBU: bigint;
+    yieldBU: bigint;
+  }> {
+    const [grossDepositsBU, grossWithdrawalsBU] = await Promise.all([
+      this.sumGrossDepositsForAddresses(addresses),
+      this.sumGrossWithdrawalsForAddresses(addresses),
+    ]);
+    const yieldBU = balanceBU + grossWithdrawalsBU - grossDepositsBU;
+    return { grossDepositsBU, grossWithdrawalsBU, yieldBU };
   }
 }

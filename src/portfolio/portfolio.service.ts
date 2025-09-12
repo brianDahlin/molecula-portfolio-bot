@@ -34,7 +34,6 @@ function xirr(
   flows: { date: Date; amount: number }[],
   guess = 0.2,
 ): number | null {
-  // Newton–Raphson
   let rate = guess;
   const maxIter = 100;
   const tol = 1e-7;
@@ -111,6 +110,7 @@ export class PortfolioService {
   }
 
   private toNumber(units: bigint, decimals: number): number {
+    // ethers v6: formatUnits(bigint, decimals) -> string
     return Number(ethers.formatUnits(units, decimals));
   }
 
@@ -120,19 +120,18 @@ export class PortfolioService {
    * - финальный положительный кэшфлоу = текущий баланс "на сегодня"
    * Возвращает годовую ставку (0.12 = 12%).
    */
-  private async computeApyFromFlows(
+  private computeApyFromFlows(
     flowsBU: { date: Date; amountBU: bigint }[],
     currentBalanceBU: bigint,
     musdDecimals: number,
-  ): Promise<number> {
+  ): number {
     if (flowsBU.length === 0) return 0;
 
     const flows = flowsBU.map((f) => ({
       date: f.date,
-      amount: this.toNumber(f.amountBU, musdDecimals), // депозиты < 0, выводы > 0
+      amount: this.toNumber(f.amountBU, musdDecimals),
     }));
 
-    // Финальная стоимость портфеля (позитивный cf)
     flows.push({
       date: new Date(),
       amount: this.toNumber(currentBalanceBU, musdDecimals),
@@ -149,10 +148,12 @@ export class PortfolioService {
 
   /**
    * Основные метрики:
-   * - deposit  = netDeposits (deposits - withdrawals), положительный при чистых депозитах
-   * - balance  = on-chain mUSD сумма по адресам
-   * - yield    = balance - deposit
-   * - apy      = XIRR на основе кэшфлоу + текущего баланса
+   * - deposit    = **grossDeposits** (всего внесено за всю историю)
+   * - balance    = on-chain mUSD сумма по адресам
+   * - yieldValue = **P&L since inception** = balance + grossWithdrawals − grossDeposits
+   * - apy        = XIRR на основе кэшфлоу + текущего баланса
+   *
+   * Возвращаемые значения в USD-числах (по 1:1 к mUSD); десятичность берём у токена.
    */
   async getStats(tgChatId: number | string) {
     const addresses = await this.users.listAddresses(tgChatId);
@@ -165,26 +166,33 @@ export class PortfolioService {
       this.musdDecimalsEnv,
     );
 
-    // Кэшфлоу для APY + netDeposits для UI
-    const [flowsBU, netDepositedBU] = await Promise.all([
-      this.molecula.cashflowsForAddresses(addresses),
-      this.molecula.sumNetDepositsForAddresses(addresses),
+    // 1) Кэшфлоу для APY
+    const flowsBU = await this.molecula.cashflowsForAddresses(addresses);
+
+    // 2) GROSS deposits/withdrawals (в базовых единицах)
+    const [grossDepositsBU, grossWithdrawalsBU] = await Promise.all([
+      this.molecula.sumGrossDepositsForAddresses(addresses),
+      this.molecula.sumGrossWithdrawalsForAddresses(addresses),
     ]);
 
-    const deposited = this.toNumber(netDepositedBU, musdDec);
-
-    // Текущий on-chain баланс
+    // 3) Текущий on-chain баланс (в базовых единицах)
     let totalMusdBU = 0n;
     for (const addr of addresses) {
       totalMusdBU += await this.balanceOfBU(this.musdToken, addr);
     }
+
+    // 4) Конвертация в числа
+    const deposit = this.toNumber(grossDepositsBU, musdDec); // то, что показываем как "Total deposited"
+    // const withdrawn = this.toNumber(grossWithdrawalsBU, musdDec); // пригодится, если захочешь отобразить
     const balance = this.toNumber(totalMusdBU, musdDec);
 
-    const yieldValue = Number((balance - deposited).toFixed(10));
+    // 5) P&L since inception
+    const yieldBU = totalMusdBU + grossWithdrawalsBU - grossDepositsBU;
+    const yieldValue = Number(this.toNumber(yieldBU, musdDec).toFixed(10));
 
-    // APY по XIRR
-    const apy = await this.computeApyFromFlows(flowsBU, totalMusdBU, musdDec);
+    // 6) APY (XIRR)
+    const apy = this.computeApyFromFlows(flowsBU, totalMusdBU, musdDec);
 
-    return { deposit: deposited, balance, yieldValue, apy };
+    return { deposit, balance, yieldValue, apy /*, withdrawn*/ };
   }
 }

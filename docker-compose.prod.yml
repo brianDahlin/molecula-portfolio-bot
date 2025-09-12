@@ -1,9 +1,7 @@
 services:
   app:
     build: .
-    env_file: .env
-    environment:
-      TELEGRAM_ENABLE: 'false'
+    env_file: .env.production
     depends_on:
       - postgres
       - redis
@@ -18,8 +16,6 @@ services:
       POSTGRES_DB: molecula_portfolio
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - '5432:5432'
     restart: unless-stopped
     networks: [botnet]
 
@@ -28,8 +24,6 @@ services:
     command: ['redis-server', '--appendonly', 'yes']
     volumes:
       - redisdata:/data
-    ports:
-      - '6379:6379'
     restart: unless-stopped
     networks: [botnet]
 

@@ -13,5 +13,5 @@ export const typeOrmOptions = (
   password: config.get<string>('db.pass'),
   database: config.get<string>('db.name'),
   entities: [User, UserAddress],
-  synchronize: true, // NOTE: for dev; replace with migrations in prod
+  synchronize: false, // NOTE: for dev; replace with migrations in prod
 });

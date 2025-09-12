@@ -1,18 +1,30 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
-import { Logger } from '@nestjs/common';
+import { Logger, LogLevel } from '@nestjs/common';
 import { AppModule } from './app.module';
-import { TelegramService } from './telegram/telegram.service';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
-  app.useLogger(new Logger());
+  const env = (process.env.NODE_ENV ?? 'development').toLowerCase();
 
-  app.get(TelegramService);
+  const logLevels: LogLevel[] =
+    env === 'production'
+      ? ['error', 'warn', 'log']
+      : ['error', 'warn', 'log', 'debug', 'verbose'];
+
+  const app = await NestFactory.create(AppModule, {
+    logger: logLevels,
+    bufferLogs: true,
+  });
+
+  app.flushLogs();
+
+  app.enableShutdownHooks();
 
   await app.init();
-  Logger.log('Molecula Portfolio Bot started', 'Bootstrap');
+
+  Logger.log(`Molecula Portfolio Bot started (env=${env})`, 'Bootstrap');
 }
+
 bootstrap().catch((err) => {
   console.error('Error during bootstrap:', err);
   process.exit(1);
